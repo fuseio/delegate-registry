@@ -5,6 +5,7 @@ import {IDelegateRegistry as IDelegateRegistry} from "./IDelegateRegistry.sol";
 import {RegistryHashes as Hashes} from "./libraries/RegistryHashes.sol";
 import {RegistryStorage as Storage} from "./libraries/RegistryStorage.sol";
 import {RegistryOps as Ops} from "./libraries/RegistryOps.sol";
+import {IERC1155} from "openzeppelin/token/ERC1155/IERC1155.sol";
 
 /**
  * @title DelegateRegistry
@@ -22,6 +23,8 @@ contract DelegateRegistry is IDelegateRegistry {
 
     /// @dev Delegate enumeration inbox, for pushing new hashes only
     mapping(address to => bytes32[] delegationHashes) internal incomingDelegationHashes;
+
+    uint256 public constant limit = 100;
 
     /**
      * ----------- WRITE -----------
@@ -124,6 +127,8 @@ contract DelegateRegistry is IDelegateRegistry {
 
     /// @inheritdoc IDelegateRegistry
     function delegateERC1155(address to, address contract_, uint256 tokenId, bytes32 rights, uint256 amount) external payable override returns (bytes32 hash) {
+        require(amount < getAvailableDelegateAmountForERC1155(to, msg.sender, contract_, tokenId, rights), "Amount exceeds available delegate amount");
+        
         hash = Hashes.erc1155Hash(msg.sender, rights, to, tokenId, contract_);
         bytes32 location = Hashes.location(hash);
         address loadedFrom = _loadFrom(location);
@@ -240,6 +245,67 @@ contract DelegateRegistry is IDelegateRegistry {
             mstore(0, amount) // Only first 32 bytes of scratch space is accessed
             return(0, 32) // Direct return, skips Solidity's redundant copying to save gas
         }
+    }
+
+    function getDelegatedAmountForERC1155(address to, address contract_, bytes32 rights) public view returns (uint256 amount) {
+        Delegation[] memory delegations_ = _getValidDelegationsFromHashes(incomingDelegationHashes[to]);
+        uint256 length = delegations_.length;
+        for (uint256 i = 0; i < length; ++i) {
+            if (delegations_[i].rights == rights && delegations_[i].contract_ == contract_ && delegations_[i].type_ == DelegationType.ERC1155) {
+                amount += delegations_[i].amount;
+            }
+        }
+    }
+
+    function getDelegatingAmountForERC1155(address from, address contract_, uint256 tokenId, bytes32 rights) public view returns (uint256 amount) {
+        Delegation[] memory delegations_ = _getValidDelegationsFromHashes(outgoingDelegationHashes[from]);
+        uint256 length = delegations_.length;
+        for (uint256 i = 0; i < length; ++i) {
+            if (delegations_[i].rights == rights && delegations_[i].contract_ == contract_ && delegations_[i].type_ == DelegationType.ERC1155 && delegations_[i].tokenId == tokenId)
+            {
+                amount += delegations_[i].amount;
+            }
+        }
+    }
+
+    /// @notice Returns the available amount that can still be delegated for an ERC1155 token
+    /// @param to The delegate address
+    /// @param from The delegator address
+    /// @param contract_ The ERC1155 contract address
+    /// @param tokenId The specific token ID
+    /// @param rights The rights being delegated
+    /// @return amount The available amount that can still be delegated
+    /// @dev Considers both global delegation limits and delegator's token balance
+    function getAvailableDelegateAmountForERC1155(address to, address from, address contract_, uint256 tokenId, bytes32 rights) public view returns (uint256) {
+        uint256 delegatedAmount = getDelegatedAmountForERC1155(to, contract_, rights);
+
+        // Check if delegate has reached their limit
+        if (delegatedAmount >= limit) {
+            return 0;
+        }
+
+        // Calculate remaining delegation capacity for delegate
+        uint256 remainingDelegateCapacity = limit - delegatedAmount;
+
+        // Get delegator's current balance and delegating amount
+        uint256 balanceOf;
+        try IERC1155(contract_).balanceOf(from, tokenId) returns (uint256 balance) {
+            balanceOf = balance;
+        } catch {
+            return 0;
+        }
+
+        uint256 delegatingAmount = getDelegatingAmountForERC1155(from, contract_, tokenId, rights);
+
+        // Ensure no underflow when calculating available balance
+        if (delegatingAmount >= balanceOf) {
+            return 0;
+        }
+
+        uint256 availableBalance = balanceOf - delegatingAmount;
+
+        // Return the minimum between remaining capacity and available balance
+        return remainingDelegateCapacity < availableBalance ? remainingDelegateCapacity : availableBalance;
     }
 
     /**
