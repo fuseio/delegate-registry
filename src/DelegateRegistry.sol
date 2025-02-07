@@ -127,7 +127,7 @@ contract DelegateRegistry is IDelegateRegistry {
 
     /// @inheritdoc IDelegateRegistry
     function delegateERC1155(address to, address contract_, uint256 tokenId, bytes32 rights, uint256 amount) external payable override returns (bytes32 hash) {
-        require(amount < getAvailableDelegateAmountForERC1155(to, msg.sender, contract_, tokenId, rights), "Amount exceeds available delegate amount");
+        require(amount <= getAvailableDelegateAmountForERC1155(to, msg.sender, contract_, tokenId, rights), "Amount exceeds available delegate amount");
         
         hash = Hashes.erc1155Hash(msg.sender, rights, to, tokenId, contract_);
         bytes32 location = Hashes.location(hash);
